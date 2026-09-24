@@ -34,7 +34,7 @@
     <button id="connectButton">Connect ESP32</button>
     <button id="disconnectButton" disabled>Disconnect</button>
   </header>
-  <div id="status">Loading default STL...</div>
+  <div id="status">Loading default cube...</div>
   <div id="viewer"></div>
   <div id="orientation">Roll: 0.00°<br>Pitch: 0.00°<br>Yaw: 0.00°</div>
 
@@ -83,21 +83,26 @@
     window.addEventListener("resize", resize);
     resize();
 
-    function displayModel(geometry, fileName) {
+    function replaceModel(nextModel, fileName) {
       if (model) {
         modelGroup.remove(model);
         model.geometry.dispose();
         model.material.dispose();
       }
+      model = nextModel;
+      modelGroup.add(model);
+      status.textContent = `Loaded: ${fileName}`;
+    }
+
+    function displayModel(geometry, fileName) {
       geometry.computeVertexNormals();
       geometry.computeBoundingBox();
       const center = geometry.boundingBox.getCenter(new THREE.Vector3());
       const size = geometry.boundingBox.getSize(new THREE.Vector3());
       geometry.translate(-center.x, -center.y, -center.z);
-      model = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.65 }));
-      model.scale.setScalar(80 / Math.max(size.x, size.y, size.z));
-      modelGroup.add(model);
-      status.textContent = `Loaded: ${fileName}`;
+      const nextModel = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.65 }));
+      nextModel.scale.setScalar(80 / Math.max(size.x, size.y, size.z));
+      replaceModel(nextModel, fileName);
     }
 
     function loadModel(url, fileName, revokeUrl = false) {
@@ -117,8 +122,13 @@
       loadModel(url, file.name, true);
     });
 
-    const defaultModelUrl = new URL("./Dazzling Maimu-Snaget.stl", import.meta.url).href;
-    loadModel(defaultModelUrl, "Dazzling Maimu-Snaget.stl");
+    replaceModel(
+      new THREE.Mesh(
+        new THREE.BoxGeometry(80, 80, 80),
+        new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.65 })
+      ),
+      "Default cube"
+    );
 
     function updateOrientation() {
       modelGroup.rotation.set(
