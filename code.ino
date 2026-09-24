@@ -7,14 +7,37 @@
 #define I2C_SDA  19
 #define I2C_SCL  18
 
+// Adjust this only if the yaw still changes while the sensor is completely still.
+// Values below this rate are treated as gyro noise/stationary drift.
+#define YAW_DEADBAND_DPS 0.8f
+#define GYRO_CALIBRATION_SAMPLES 500
+
 MPU6500_WE mpu = MPU6500_WE(MPU_ADDR);
 
 float roll = 0.0f;
 float pitch = 0.0f;
 float yaw = 0.0f;
+float gyroZBias = 0.0f;
 
 unsigned long lastUpdate = 0;
 unsigned long lastPrint = 0;
+
+void calibrateYawGyro() {
+  Serial.println("Keep the sensor completely still: calibrating yaw gyro...");
+  delay(500);
+
+  float sumZ = 0.0f;
+  for (int i = 0; i < GYRO_CALIBRATION_SAMPLES; i++) {
+    xyzFloat gyro = mpu.getGyrValues();
+    sumZ += gyro.z;
+    delay(3);
+  }
+
+  gyroZBias = sumZ / GYRO_CALIBRATION_SAMPLES;
+  Serial.print("Yaw gyro bias: ");
+  Serial.print(gyroZBias, 4);
+  Serial.println(" deg/s");
+}
 
 void setup() {
   Serial.begin(115200);
@@ -30,21 +53,23 @@ void setup() {
     }
   }
 
-  // Keep the sensor still and level during this calibration.
+  // Keep the sensor still during the library's accelerometer/gyro calibration.
   Serial.println("Keep the sensor still for calibration...");
   delay(1000);
   mpu.autoOffsets();
 
-  // These settings are supported by MPU6500_WE and are also valid for an MPU6050.
   mpu.setAccRange(MPU9250_ACC_RANGE_2G);
   mpu.setGyrRange(MPU9250_GYRO_RANGE_250);
   mpu.setAccDLPF(MPU9250_DLPF_6);
   mpu.setGyrDLPF(MPU9250_DLPF_6);
 
-  // Initialize roll and pitch from the accelerometer so startup is stable.
+  // Take an additional average specifically for the yaw gyro axis.
+  calibrateYawGyro();
+
   xyzFloat acc = mpu.getGValues();
   roll = atan2f(acc.y, acc.z) * 180.0f / PI;
   pitch = atan2f(-acc.x, sqrtf(acc.y * acc.y + acc.z * acc.z)) * 180.0f / PI;
+  yaw = 0.0f;
 
   lastUpdate = micros();
   lastPrint = millis();
@@ -60,24 +85,23 @@ void loop() {
   xyzFloat acc = mpu.getGValues();
   xyzFloat gyro = mpu.getGyrValues();
 
-  // Accelerometer angles. The accelerometer cannot determine yaw.
   const float accRoll = atan2f(acc.y, acc.z) * 180.0f / PI;
   const float accPitch = atan2f(-acc.x, sqrtf(acc.y * acc.y + acc.z * acc.z)) * 180.0f / PI;
 
-  // Gyroscope rates are returned in degrees/second by MPU6500_WE.
-  // This assumes the sensor X/Y/Z axes are aligned with roll/pitch/yaw.
   const float gyroRoll = gyro.x;
   const float gyroPitch = gyro.y;
-  const float gyroYaw = gyro.z;
+  const float correctedGyroYaw = gyro.z - gyroZBias;
 
-  // Complementary filter: gyro gives responsive motion, accelerometer removes drift
-  // from roll and pitch. Yaw is gyro-integrated and will drift over time.
   const float gyroWeight = 0.98f;
   roll = gyroWeight * (roll + gyroRoll * dt) + (1.0f - gyroWeight) * accRoll;
   pitch = gyroWeight * (pitch + gyroPitch * dt) + (1.0f - gyroWeight) * accPitch;
-  yaw += gyroYaw * dt;
 
-  // Keep yaw in the range -180 to +180 degrees.
+  // An MPU6050 has no magnetometer, so it cannot correct absolute yaw.
+  // Bias removal and a deadband prevent stationary gyro noise from accumulating.
+  if (fabsf(correctedGyroYaw) > YAW_DEADBAND_DPS) {
+    yaw += correctedGyroYaw * dt;
+  }
+
   if (yaw > 180.0f) yaw -= 360.0f;
   if (yaw < -180.0f) yaw += 360.0f;
 
@@ -93,6 +117,5 @@ void loop() {
     Serial.println(" deg");
   }
 
-  // Avoid an excessively tight loop while retaining accurate integration timing.
   delay(2);
 }
