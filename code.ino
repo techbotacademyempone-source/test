@@ -7,8 +7,7 @@
 #define I2C_SDA  19
 #define I2C_SCL  18
 
-// Adjust this only if the yaw still changes while the sensor is completely still.
-// Values below this rate are treated as gyro noise/stationary drift.
+// Tune this if the sensor still drifts while stationary.
 #define YAW_DEADBAND_DPS 0.8f
 #define GYRO_CALIBRATION_SAMPLES 500
 
@@ -53,7 +52,6 @@ void setup() {
     }
   }
 
-  // Keep the sensor still during the library's accelerometer/gyro calibration.
   Serial.println("Keep the sensor still for calibration...");
   delay(1000);
   mpu.autoOffsets();
@@ -63,7 +61,6 @@ void setup() {
   mpu.setAccDLPF(MPU9250_DLPF_6);
   mpu.setGyrDLPF(MPU9250_DLPF_6);
 
-  // Take an additional average specifically for the yaw gyro axis.
   calibrateYawGyro();
 
   xyzFloat acc = mpu.getGValues();
@@ -96,8 +93,6 @@ void loop() {
   roll = gyroWeight * (roll + gyroRoll * dt) + (1.0f - gyroWeight) * accRoll;
   pitch = gyroWeight * (pitch + gyroPitch * dt) + (1.0f - gyroWeight) * accPitch;
 
-  // An MPU6050 has no magnetometer, so it cannot correct absolute yaw.
-  // Bias removal and a deadband prevent stationary gyro noise from accumulating.
   if (fabsf(correctedGyroYaw) > YAW_DEADBAND_DPS) {
     yaw += correctedGyroYaw * dt;
   }
