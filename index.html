@@ -83,10 +83,7 @@
     window.addEventListener("resize", resize);
     resize();
 
-    fileInput.addEventListener("change", () => {
-      const file = fileInput.files[0];
-      if (!file) return;
-      const url = URL.createObjectURL(file);
+    function loadModel(url, fileName, revokeUrl = false) {
       loader.load(url, (geometry) => {
         if (model) {
           modelGroup.remove(model);
@@ -101,13 +98,22 @@
         model = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.65 }));
         model.scale.setScalar(80 / Math.max(size.x, size.y, size.z));
         modelGroup.add(model);
-        URL.revokeObjectURL(url);
-        status.textContent = `Loaded: ${file.name}`;
+        if (revokeUrl) URL.revokeObjectURL(url);
+        status.textContent = `Loaded: ${fileName}`;
       }, undefined, () => {
-        URL.revokeObjectURL(url);
+        if (revokeUrl) URL.revokeObjectURL(url);
         status.textContent = "Could not load the STL file.";
       });
+    }
+
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      loadModel(url, file.name, true);
     });
+
+    loadModel("Dazzling%20Maimu-Snaget.stl", "Dazzling Maimu-Snaget.stl");
 
     function updateOrientation() {
       modelGroup.rotation.set(
