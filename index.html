@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ESP32 MPU6050 3D Gyro Dodge</title>
+  <title>ESP32 MPU6050 STL Viewer</title>
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Arial, sans-serif; background: #111827; color: #f9fafb; }
@@ -11,37 +11,31 @@
     h1 { margin: 0; font-size: 20px; flex: 1; }
     button, input[type="file"] { font: inherit; }
     button { border: 0; border-radius: 6px; padding: 9px 13px; color: white; background: #2563eb; cursor: pointer; }
-    button:hover:not(:disabled) { background: #3b82f6; }
     button:disabled { opacity: .5; cursor: not-allowed; }
     #disconnectButton { background: #dc2626; }
-    #startGameButton { background: #059669; }
     #fileInput { max-width: 260px; }
-    #viewer { height: calc(100vh - 132px); min-height: 420px; position: relative; overflow: hidden; }
+    #viewer { height: calc(100vh - 132px); min-height: 420px; }
     #status { padding: 8px 20px; color: #d1d5db; background: #111827; font-size: 14px; }
-    #orientation { position: fixed; right: 16px; bottom: 16px; padding: 10px 12px; border-radius: 6px; background: rgba(17, 24, 39, .85); font-family: monospace; line-height: 1.5; z-index: 5; }
-    #gameHud { position: absolute; top: 14px; left: 14px; z-index: 4; min-width: 225px; padding: 12px 14px; border: 1px solid rgba(125, 211, 252, .45); border-radius: 10px; background: rgba(8, 15, 31, .82); box-shadow: 0 8px 30px rgba(0,0,0,.25); }
-    #gameHud strong { color: #7dd3fc; letter-spacing: .08em; font-size: 12px; }
-    #gameStats { display: flex; gap: 18px; margin-top: 6px; font-weight: bold; }
-    #gameHint, #gameMessage { margin: 8px 0 0; color: #cbd5e1; font-size: 12px; line-height: 1.35; }
-    #gameMessage { color: #fbbf24; }
-    @media (max-width: 700px) { #viewer { height: calc(100vh - 205px); min-height: 390px; } #gameHud { top: 8px; left: 8px; } #orientation { right: 8px; bottom: 8px; font-size: 12px; } }
+    #orientation { position: fixed; right: 16px; bottom: 16px; padding: 10px 12px; border-radius: 6px; background: rgba(17, 24, 39, .85); font-family: monospace; line-height: 1.5; }
   </style>
   <script type="importmap">
-  {"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
   </script>
 </head>
 <body>
   <header>
-    <h1>ESP32 MPU6050 3D Gyro Dodge</h1>
+    <h1>ESP32 MPU6050 STL Viewer</h1>
     <input id="fileInput" type="file" accept=".stl,model/stl" />
     <button id="connectButton">Connect ESP32</button>
     <button id="disconnectButton" disabled>Disconnect</button>
-    <button id="startGameButton">Start Game</button>
   </header>
-  <div id="status">Loading default cube...</div>
-  <div id="viewer">
-    <div id="gameHud"><strong>3D GYRO DODGE</strong><div id="gameStats"><span>Score: <b id="scoreValue">0</b></span><span>Lives: <b id="livesValue">3</b></span></div><p id="gameHint">Tilt roll left/right and pitch forward/back to dodge the incoming 3D bullets.</p><div id="gameMessage">Press Start Game, then tilt the STL.</div></div>
-  </div>
+  <div id="status">Choose an STL file, then connect the ESP32.</div>
+  <div id="viewer"></div>
   <div id="orientation">Roll: 0.00°<br>Pitch: 0.00°<br>Yaw: 0.00°</div>
 
   <script type="module">
@@ -53,12 +47,8 @@
     const fileInput = document.getElementById("fileInput");
     const connectButton = document.getElementById("connectButton");
     const disconnectButton = document.getElementById("disconnectButton");
-    const startGameButton = document.getElementById("startGameButton");
     const status = document.getElementById("status");
     const orientationText = document.getElementById("orientation");
-    const scoreValue = document.getElementById("scoreValue");
-    const livesValue = document.getElementById("livesValue");
-    const gameMessage = document.getElementById("gameMessage");
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x202938);
@@ -76,8 +66,6 @@
 
     const modelGroup = new THREE.Group();
     scene.add(modelGroup);
-    const gameWorld = new THREE.Group();
-    scene.add(gameWorld);
     const loader = new STLLoader();
     let model = null;
     let port = null;
@@ -85,28 +73,9 @@
     let keepReading = false;
     const orientation = { roll: 0, pitch: 0, yaw: 0 };
 
-    // Game objects live in the Three.js scene. The original STL and OrbitControls remain unchanged.
-    const lanes = [-48, -24, 0, 24, 48];
-    const game = { running: false, score: 0, lives: 3, bullets: [], lastShot: 0, shotDelay: 1100, lastFrame: 0, playerLane: 2, flash: 0 };
-    const machine = new THREE.Group();
-    machine.add(new THREE.Mesh(new THREE.BoxGeometry(42, 18, 18), new THREE.MeshStandardMaterial({ color: 0x475569, metalness: .7, roughness: .3 })));
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(7, 7, 22, 16), new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: .8, roughness: .25 }));
-    barrel.rotation.x = Math.PI / 2;
-    barrel.position.z = -15;
-    machine.add(barrel);
-    machine.position.set(0, 65, -70);
-    gameWorld.add(machine);
-
-    const targetGuide = new THREE.Group();
-    for (let row = 0; row < 5; row++) for (let col = 0; col < 5; col++) {
-      const ring = new THREE.Mesh(new THREE.RingGeometry(7.5, 8, 24), new THREE.MeshBasicMaterial({ color: 0x64748b, transparent: true, opacity: .18, side: THREE.DoubleSide }));
-      ring.position.set(lanes[col], lanes[4 - row], 1);
-      targetGuide.add(ring);
-    }
-    gameWorld.add(targetGuide);
-
     function resize() {
-      const width = viewer.clientWidth, height = viewer.clientHeight;
+      const width = viewer.clientWidth;
+      const height = viewer.clientHeight;
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderer.setSize(width, height);
@@ -114,44 +83,49 @@
     window.addEventListener("resize", resize);
     resize();
 
-    function replaceModel(nextModel, fileName) {
-      if (model) { modelGroup.remove(model); model.geometry.dispose(); model.material.dispose(); }
-      model = nextModel;
-      modelGroup.add(model);
-      status.textContent = `Loaded: ${fileName}`;
-    }
-
-    function displayModel(geometry, fileName) {
-      geometry.computeVertexNormals();
-      geometry.computeBoundingBox();
-      const center = geometry.boundingBox.getCenter(new THREE.Vector3());
-      const size = geometry.boundingBox.getSize(new THREE.Vector3());
-      geometry.translate(-center.x, -center.y, -center.z);
-      const nextModel = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: .65 }));
-      nextModel.scale.setScalar(80 / Math.max(size.x, size.y, size.z));
-      replaceModel(nextModel, fileName);
-    }
-
-    function loadModel(url, fileName, revokeUrl = false) {
-      loader.load(url, geometry => { displayModel(geometry, fileName); if (revokeUrl) URL.revokeObjectURL(url); }, undefined, () => { if (revokeUrl) URL.revokeObjectURL(url); status.textContent = `Could not load ${fileName}.`; });
-    }
-    fileInput.addEventListener("change", () => { const file = fileInput.files[0]; if (file) loadModel(URL.createObjectURL(file), file.name, true); });
-    replaceModel(new THREE.Mesh(new THREE.BoxGeometry(80, 80, 80), new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: .65 })), "Default cube");
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      loader.load(url, (geometry) => {
+        if (model) {
+          modelGroup.remove(model);
+          model.geometry.dispose();
+          model.material.dispose();
+        }
+        geometry.computeVertexNormals();
+        geometry.computeBoundingBox();
+        const center = geometry.boundingBox.getCenter(new THREE.Vector3());
+        const size = geometry.boundingBox.getSize(new THREE.Vector3());
+        geometry.translate(-center.x, -center.y, -center.z);
+        model = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.65 }));
+        model.scale.setScalar(80 / Math.max(size.x, size.y, size.z));
+        modelGroup.add(model);
+        URL.revokeObjectURL(url);
+        status.textContent = `Loaded: ${file.name}`;
+      }, undefined, () => {
+        URL.revokeObjectURL(url);
+        status.textContent = "Could not load the STL file.";
+      });
+    });
 
     function updateOrientation() {
-      // This is the existing STL control: all three sensor axes still rotate the model.
-      modelGroup.rotation.set(THREE.MathUtils.degToRad(orientation.pitch), THREE.MathUtils.degToRad(orientation.yaw), THREE.MathUtils.degToRad(orientation.roll), "XYZ");
+      modelGroup.rotation.set(
+        THREE.MathUtils.degToRad(orientation.pitch),
+        THREE.MathUtils.degToRad(orientation.yaw),
+        THREE.MathUtils.degToRad(orientation.roll),
+        "XYZ"
+      );
       orientationText.innerHTML = `Roll: ${orientation.roll.toFixed(2)}°<br>Pitch: ${orientation.pitch.toFixed(2)}°<br>Yaw: ${orientation.yaw.toFixed(2)}°`;
-      // Gameplay reads tilt only to select a 3D dodge cell; it never changes model control.
-      const x = THREE.MathUtils.clamp(orientation.roll, -35, 35);
-      const y = THREE.MathUtils.clamp(orientation.pitch, -35, 35);
-      game.playerLane = Math.max(0, Math.min(24, Math.round((x + 35) / 70 * 4) + Math.round((35 - y) / 70 * 4) * 5));
     }
 
     function parseOrientation(line) {
+      // Matches: Roll: 1.23 deg, Pitch: -4.56 deg, Yaw: 7.89 deg
       const match = line.match(/Roll:\s*(-?(?:\d+\.?\d*|\.\d+)).*?Pitch:\s*(-?(?:\d+\.?\d*|\.\d+)).*?Yaw:\s*(-?(?:\d+\.?\d*|\.\d+))/i);
       if (!match) return;
-      orientation.roll = Number(match[1]); orientation.pitch = Number(match[2]); orientation.yaw = Number(match[3]);
+      orientation.roll = Number(match[1]);
+      orientation.pitch = Number(match[2]);
+      orientation.yaw = Number(match[3]);
       updateOrientation();
       status.textContent = `Receiving ESP32 data: ${line.trim()}`;
     }
@@ -170,78 +144,45 @@
           buffer = lines.pop() || "";
           lines.forEach(parseOrientation);
         }
-      } catch (error) { if (keepReading) status.textContent = `Serial read error: ${error.message}`; }
-      finally { reader.releaseLock(); pipe.catch(() => {}); }
+      } catch (error) {
+        if (keepReading) status.textContent = `Serial read error: ${error.message}`;
+      } finally {
+        reader.releaseLock();
+        pipe.catch(() => {});
+      }
     }
 
     connectButton.addEventListener("click", async () => {
-      if (!("serial" in navigator)) { status.textContent = "Web Serial requires Chrome/Edge on HTTPS or localhost."; return; }
+      if (!("serial" in navigator)) {
+        status.textContent = "Web Serial requires Chrome/Edge on HTTPS or localhost.";
+        return;
+      }
       try {
         port = await navigator.serial.requestPort();
         await port.open({ baudRate: 115200 });
-        keepReading = true; connectButton.disabled = true; disconnectButton.disabled = false;
+        keepReading = true;
+        connectButton.disabled = true;
+        disconnectButton.disabled = false;
         status.textContent = "Connected. Waiting for Roll/Pitch/Yaw lines...";
         readSerial();
-      } catch (error) { status.textContent = `Connection failed: ${error.message}`; }
+      } catch (error) {
+        status.textContent = `Connection failed: ${error.message}`;
+      }
     });
+
     disconnectButton.addEventListener("click", async () => {
       keepReading = false;
       if (reader) await reader.cancel().catch(() => {});
       if (port) await port.close().catch(() => {});
-      reader = null; port = null; connectButton.disabled = false; disconnectButton.disabled = true;
+      reader = null;
+      port = null;
+      connectButton.disabled = false;
+      disconnectButton.disabled = true;
       status.textContent = "ESP32 disconnected.";
     });
 
-    function playerPosition() {
-      const col = game.playerLane % 5, row = Math.floor(game.playerLane / 5);
-      return new THREE.Vector3(lanes[col], lanes[4 - row], 0);
-    }
-
-    function startGame() {
-      game.running = true; game.score = 0; game.lives = 3; game.bullets.forEach(b => gameWorld.remove(b.mesh)); game.bullets = [];
-      game.lastFrame = performance.now(); game.lastShot = game.lastFrame; game.shotDelay = 1100; game.flash = 0;
-      scoreValue.textContent = "0"; livesValue.textContent = "3"; gameMessage.textContent = "Tilt the STL to a different 3D cell before each bullet arrives."; startGameButton.textContent = "Restart Game";
-    }
-    startGameButton.addEventListener("click", startGame);
-
-    function shootBullet(now) {
-      const targetCell = Math.floor(Math.random() * 25);
-      const col = targetCell % 5, row = Math.floor(targetCell / 5);
-      const target = new THREE.Vector3(lanes[col], lanes[4 - row], 0);
-      const mesh = new THREE.Mesh(new THREE.SphereGeometry(5, 16, 12), new THREE.MeshStandardMaterial({ color: 0xfb7185, emissive: 0x7f1d1d, emissiveIntensity: 1.5 }));
-      mesh.position.copy(machine.position);
-      gameWorld.add(mesh);
-      game.bullets.push({ mesh, targetCell, target, progress: 0, speed: .00028 + game.score * .000004 });
-      game.lastShot = now;
-      game.shotDelay = Math.max(430, 1100 - game.score * 12);
-    }
-
-    function updateGame(now, delta) {
-      if (!game.running) return;
-      if (now - game.lastShot >= game.shotDelay) shootBullet(now);
-      const player = playerPosition();
-      for (let i = game.bullets.length - 1; i >= 0; i--) {
-        const bullet = game.bullets[i];
-        bullet.progress += bullet.speed * delta;
-        bullet.mesh.position.lerpVectors(machine.position, bullet.target, Math.min(bullet.progress, 1));
-        if (bullet.progress >= 1) {
-          gameWorld.remove(bullet.mesh);
-          game.bullets.splice(i, 1);
-          if (bullet.targetCell === game.playerLane || bullet.target.distanceTo(player) < 13) {
-            game.lives--; game.flash = 220; livesValue.textContent = String(game.lives);
-            if (game.lives <= 0) { game.running = false; gameMessage.textContent = `Game over — score ${game.score}. Press Restart Game.`; }
-          } else { game.score++; scoreValue.textContent = String(game.score); }
-        }
-      }
-      game.flash = Math.max(0, game.flash - delta);
-      targetGuide.children.forEach((ring, index) => { ring.material.color.set(index === game.playerLane ? (game.flash ? 0xf87171 : 0x38bdf8) : 0x64748b); ring.material.opacity = index === game.playerLane ? .75 : .18; });
-    }
-
-    function animate(now = performance.now()) {
+    function animate() {
       requestAnimationFrame(animate);
-      const delta = Math.min(50, now - game.lastFrame || 16);
-      game.lastFrame = now;
-      updateGame(now, delta);
       controls.update();
       renderer.render(scene, camera);
     }
