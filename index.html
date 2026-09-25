@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ESP32 MPU6050 STL Viewer</title>
+  <title>ESP32 MPU6050 Gyro Dodge</title>
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Arial, sans-serif; background: #111827; color: #f9fafb; }
@@ -11,12 +11,25 @@
     h1 { margin: 0; font-size: 20px; flex: 1; }
     button, input[type="file"] { font: inherit; }
     button { border: 0; border-radius: 6px; padding: 9px 13px; color: white; background: #2563eb; cursor: pointer; }
+    button:hover:not(:disabled) { background: #3b82f6; }
     button:disabled { opacity: .5; cursor: not-allowed; }
     #disconnectButton { background: #dc2626; }
+    #startGameButton { background: #059669; }
     #fileInput { max-width: 260px; }
-    #viewer { height: calc(100vh - 132px); min-height: 420px; }
+    #viewer { height: calc(100vh - 132px); min-height: 420px; position: relative; overflow: hidden; }
     #status { padding: 8px 20px; color: #d1d5db; background: #111827; font-size: 14px; }
-    #orientation { position: fixed; right: 16px; bottom: 16px; padding: 10px 12px; border-radius: 6px; background: rgba(17, 24, 39, .85); font-family: monospace; line-height: 1.5; }
+    #orientation { position: fixed; right: 16px; bottom: 16px; padding: 10px 12px; border-radius: 6px; background: rgba(17, 24, 39, .85); font-family: monospace; line-height: 1.5; z-index: 5; }
+    #gameCanvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
+    #gameHud { position: absolute; top: 14px; left: 14px; z-index: 4; min-width: 210px; padding: 12px 14px; border: 1px solid rgba(125, 211, 252, .45); border-radius: 10px; background: rgba(8, 15, 31, .82); box-shadow: 0 8px 30px rgba(0, 0, 0, .25); }
+    #gameHud strong { color: #7dd3fc; letter-spacing: .08em; font-size: 12px; }
+    #gameStats { display: flex; gap: 18px; margin-top: 6px; font-weight: bold; }
+    #gameHint { margin: 8px 0 0; color: #cbd5e1; font-size: 12px; line-height: 1.35; }
+    #gameMessage { color: #fbbf24; font-size: 12px; margin-top: 6px; }
+    @media (max-width: 700px) {
+      #viewer { height: calc(100vh - 205px); min-height: 390px; }
+      #gameHud { top: 8px; left: 8px; }
+      #orientation { right: 8px; bottom: 8px; font-size: 12px; }
+    }
   </style>
   <script type="importmap">
   {
@@ -29,13 +42,22 @@
 </head>
 <body>
   <header>
-    <h1>ESP32 MPU6050 STL Viewer</h1>
+    <h1>ESP32 MPU6050 Gyro Dodge</h1>
     <input id="fileInput" type="file" accept=".stl,model/stl" />
     <button id="connectButton">Connect ESP32</button>
     <button id="disconnectButton" disabled>Disconnect</button>
+    <button id="startGameButton">Start Game</button>
   </header>
   <div id="status">Loading default cube...</div>
-  <div id="viewer"></div>
+  <div id="viewer">
+    <canvas id="gameCanvas" aria-label="Gyro dodge game"></canvas>
+    <div id="gameHud">
+      <strong>GYRO DODGE</strong>
+      <div id="gameStats"><span>Score: <b id="scoreValue">0</b></span><span>Lives: <b id="livesValue">3</b></span></div>
+      <p id="gameHint">Tilt left or right to move between the five lanes. Dodge the incoming bullets.</p>
+      <div id="gameMessage">Press Start Game, then use Roll.</div>
+    </div>
+  </div>
   <div id="orientation">Roll: 0.00°<br>Pitch: 0.00°<br>Yaw: 0.00°</div>
 
   <script type="module">
@@ -47,8 +69,14 @@
     const fileInput = document.getElementById("fileInput");
     const connectButton = document.getElementById("connectButton");
     const disconnectButton = document.getElementById("disconnectButton");
+    const startGameButton = document.getElementById("startGameButton");
     const status = document.getElementById("status");
     const orientationText = document.getElementById("orientation");
+    const gameCanvas = document.getElementById("gameCanvas");
+    const gameContext = gameCanvas.getContext("2d");
+    const scoreValue = document.getElementById("scoreValue");
+    const livesValue = document.getElementById("livesValue");
+    const gameMessage = document.getElementById("gameMessage");
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x202938);
@@ -73,12 +101,30 @@
     let keepReading = false;
     const orientation = { roll: 0, pitch: 0, yaw: 0 };
 
+    // The game is an independent overlay: the existing STL model and its controls are unchanged.
+    const game = {
+      running: false,
+      score: 0,
+      lives: 3,
+      bullets: [],
+      lastFrame: 0,
+      lastShot: 0,
+      shotDelay: 1050,
+      laneCount: 5,
+      playerLane: 2,
+      flash: 0
+    };
+
     function resize() {
       const width = viewer.clientWidth;
       const height = viewer.clientHeight;
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderer.setSize(width, height);
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      gameCanvas.width = Math.floor(width * pixelRatio);
+      gameCanvas.height = Math.floor(height * pixelRatio);
+      gameContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     }
     window.addEventListener("resize", resize);
     resize();
@@ -138,6 +184,9 @@
         "XYZ"
       );
       orientationText.innerHTML = `Roll: ${orientation.roll.toFixed(2)}°<br>Pitch: ${orientation.pitch.toFixed(2)}°<br>Yaw: ${orientation.yaw.toFixed(2)}°`;
+      // Only roll affects the game. The STL continues to use all three sensor axes above.
+      game.playerLane = Math.max(0, Math.min(game.laneCount - 1,
+        Math.round(((THREE.MathUtils.clamp(orientation.roll, -35, 35) + 35) / 70) * (game.laneCount - 1))));
     }
 
     function parseOrientation(line) {
@@ -202,8 +251,130 @@
       status.textContent = "ESP32 disconnected.";
     });
 
-    function animate() {
+    function resetGame() {
+      game.running = true;
+      game.score = 0;
+      game.lives = 3;
+      game.bullets = [];
+      game.lastFrame = performance.now();
+      game.lastShot = game.lastFrame;
+      game.shotDelay = 1050;
+      game.flash = 0;
+      scoreValue.textContent = "0";
+      livesValue.textContent = "3";
+      gameMessage.textContent = "Dodge! Roll left or right to change lanes.";
+      startGameButton.textContent = "Restart Game";
+    }
+
+    startGameButton.addEventListener("click", resetGame);
+
+    function laneX(lane, width) {
+      const padding = Math.min(80, width * 0.16);
+      return padding + (width - padding * 2) * (lane / (game.laneCount - 1));
+    }
+
+    function shootBullet(now) {
+      const targetLane = Math.floor(Math.random() * game.laneCount);
+      game.bullets.push({ lane: targetLane, progress: 0, speed: 0.00027 + game.score * 0.000004, firedAt: now });
+      game.lastShot = now;
+      game.shotDelay = Math.max(430, 1050 - game.score * 12);
+    }
+
+    function updateGame(now, delta) {
+      if (!game.running) return;
+      if (now - game.lastShot >= game.shotDelay) shootBullet(now);
+      const height = viewer.clientHeight;
+      const playerY = height - 70;
+      const hitDistance = Math.max(22, height * 0.035);
+      const playerX = laneX(game.playerLane, viewer.clientWidth);
+
+      for (let i = game.bullets.length - 1; i >= 0; i--) {
+        const bullet = game.bullets[i];
+        bullet.progress += bullet.speed * delta;
+        const bulletY = 48 + (playerY - 48) * bullet.progress;
+        const bulletX = laneX(bullet.lane, viewer.clientWidth);
+        if (bullet.progress >= 1) {
+          game.bullets.splice(i, 1);
+          if (Math.abs(bulletX - playerX) < viewer.clientWidth / game.laneCount * 0.34) {
+            game.lives--;
+            game.flash = 180;
+            livesValue.textContent = String(game.lives);
+            if (game.lives <= 0) {
+              game.running = false;
+              gameMessage.textContent = `Game over — score ${game.score}. Press Restart Game.`;
+            }
+          } else {
+            game.score++;
+            scoreValue.textContent = String(game.score);
+          }
+        }
+      }
+      game.flash = Math.max(0, game.flash - delta);
+    }
+
+    function drawGame() {
+      const width = viewer.clientWidth;
+      const height = viewer.clientHeight;
+      gameContext.clearRect(0, 0, width, height);
+      const playerY = height - 70;
+      const machineX = width / 2;
+
+      // Lane guides make the safe dodge positions clear without covering the STL viewer.
+      gameContext.save();
+      gameContext.setLineDash([5, 10]);
+      for (let lane = 0; lane < game.laneCount; lane++) {
+        const x = laneX(lane, width);
+        gameContext.strokeStyle = lane === game.playerLane ? "rgba(125, 211, 252, .32)" : "rgba(148, 163, 184, .14)";
+        gameContext.beginPath();
+        gameContext.moveTo(x, 50);
+        gameContext.lineTo(x, height - 35);
+        gameContext.stroke();
+      }
+      gameContext.restore();
+
+      // Firing machine at the top.
+      gameContext.fillStyle = "#475569";
+      gameContext.fillRect(machineX - 30, 18, 60, 22);
+      gameContext.fillStyle = "#94a3b8";
+      gameContext.fillRect(machineX - 8, 35, 16, 16);
+      gameContext.fillStyle = "#0f172a";
+      gameContext.beginPath();
+      gameContext.arc(machineX, 27, 7, 0, Math.PI * 2);
+      gameContext.fill();
+
+      game.bullets.forEach((bullet) => {
+        const targetX = laneX(bullet.lane, width);
+        const x = machineX + (targetX - machineX) * Math.min(bullet.progress * 1.2, 1);
+        const y = 48 + (playerY - 48) * bullet.progress;
+        gameContext.shadowBlur = 14;
+        gameContext.shadowColor = "#fb7185";
+        gameContext.fillStyle = "#fb7185";
+        gameContext.beginPath();
+        gameContext.arc(x, y, 7, 0, Math.PI * 2);
+        gameContext.fill();
+        gameContext.shadowBlur = 0;
+      });
+
+      // Gyro-controlled dodge position. This marker is an overlay; the STL model remains untouched.
+      gameContext.shadowBlur = 18;
+      gameContext.shadowColor = game.flash ? "#f87171" : "#38bdf8";
+      gameContext.fillStyle = game.flash ? "#f87171" : "#38bdf8";
+      gameContext.beginPath();
+      gameContext.arc(laneX(game.playerLane, width), playerY, 16, 0, Math.PI * 2);
+      gameContext.fill();
+      gameContext.shadowBlur = 0;
+      gameContext.fillStyle = "#e0f2fe";
+      gameContext.font = "bold 11px Arial";
+      gameContext.textAlign = "center";
+      gameContext.fillText("PLAYER", laneX(game.playerLane, width), playerY + 34);
+    }
+
+    function animate(now = performance.now()) {
       requestAnimationFrame(animate);
+      const delta = Math.min(50, now - game.lastFrame || 16);
+      game.lastFrame = now;
+      updateGame(now, delta);
+      drawGame();
       controls.update();
       renderer.render(scene, camera);
     }
